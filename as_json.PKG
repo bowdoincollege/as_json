@@ -1,0 +1,503 @@
+create or replace package as_json
+is
+/**********************************************
+**
+** Author: Anton Scheffer
+** Date: 22-12-2015
+** Website: https://technology.amis.nl
+** See also: https://technology.amis.nl/2015/12/22/as_json-relational-to-json-in-oracle-database/
+**
+** Changelog:
+**   Date:
+**     09-19-2016  - Change dates to/from UTC timezone when using c_date_iso8601
+**                      see https://jsao.io/2016/09/working-with-dates-using-the-nodejs-driver/
+**     08-23-2016  - Added parameters p_return_object and p_return_object_pre to json_ec
+**                   Added function stringify_ec
+**                   Removed PRAGMA SERIALLY_REUSABLE
+**     08-13-2016  - Added PRAGMA SERIALLY_REUSABLE
+**                   Fixed bug with json_ec
+**     08-08-2016  - Added q-functions, like qjson, qget_string, etc.. Allows you the query from a json-string
+**                     I should have used that technique from the start :(
+**                   Lifted restriction on length of JSON string values inside a JSON-string
+**     05-08-2016  - Added get_string_clob
+**     02-08-2016  - Fixed bug for stringify of numbers with decimal point between -1 and 1
+**     24-04-2016  - Added json_ec( p_rc sys_refcursor, ...
+**                     This parses a refcursor wich may have embedded cursor() functions
+**     14-04-2016  - Simplified function json( p_ad anydata, ....
+**     04-03-2016  - Added overloaded procedures for add_member and add_item
+**                   Added jsonp parameter to procedure htp
+**                   Added p_free parameter to procedure htp
+**     07-02-2016  - Added overloaded function stringify
+**     04-02-2016  - fixed bug for wildcards in path_get
+**     03-02-2016  - Added p_check_boolean_strings to json( p_rc sys_refcursor
+**     01-02-2016  - Added get_date
+**     27-01-2016  - Added overloaded function to_xmltype
+**                   Added p_free to function to_xmltype
+**                   Added p_path to get_string, get_number and get_boolean functions
+**     19-01-2016  - Added procedure htp
+**     22-12-2015  - Initial creation
+******************************************************************************
+******************************************************************************
+Copyright (C) 2015-2016 by Anton Scheffer
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in
+all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+THE SOFTWARE.
+
+******************************************************************************
+******************************************** */
+/*
+declare
+  x as_json.tp_json_value;
+  rc sys_refcursor;
+begin
+-- create json array from refcursor
+  open rc for select level from dual connect by level <= 5;
+  x := as_json.json( rc );
+-- and show the resulting json string
+  dbms_output.put_line( as_json.stringify( x ) );
+-- and show the resulting json string using some formatting
+  dbms_output.put_line( as_json.stringify( x, 2, 1 ) );
+-- build a json object
+  x := as_json.json( 'first_name', as_json.jv( 'Anton' )
+                   , 'last_name', as_json.jv( 'Scheffer' )
+                   , 'company', as_json.jv( 'AMIS' )
+                   );
+-- and show the resulting json string using some formatting
+  dbms_output.put_line( as_json.stringify( x ) );
+-- build a json object step for step
+  x := null;
+  as_json.add_member( x, 'first_name', 'Anton' );
+  as_json.add_member( x, 'last_name', 'Scheffer' );
+  as_json.add_member( x, 'company', 'AMIS' );
+-- and show the resulting json string
+  dbms_output.put_line( as_json.stringify( x ) );
+-- or build a json array
+  x := null;
+  for i in 1 .. 10
+  loop
+    as_json.add_item( x, i );
+  end loop;
+-- and show the resulting json string
+  dbms_output.put_line( as_json.stringify( x ) );
+-- or build a json array of json objects
+  x := null;
+  for i in 1 .. 5
+  loop
+    as_json.add_item( x, as_json.json( 'att1', as_json.jv( i )
+                                     , 'att2', as_json.jv( 'string ' || i )
+                                     , 'att3', as_json.jv( mod( i, 2 ) = 1 )
+                                     , 'att4', as_json.jv
+                                     , 'att5', as_json.jv( sysdate, 'dd-mon-yyyy' )
+                                     ) );
+  end loop;
+-- and show the resulting json string
+  dbms_output.put_line( as_json.stringify( x, 2 ) );
+-- create json object from json-string
+  x := as_json.json( '{"a" : 33, "b":[1,2,31], "c":{"d":321,"e":12, "f":[[11,22,["a","b","c",{"x":"y"}]],33,{"g":{"h":44}}]} }' );
+-- and show the (first level) members
+  for i in 1 .. as_json.get_count( x )
+  loop
+    dbms_output.put_line( as_json.get_name( x, i ) || ' is ' || as_json.get_json_type( as_json.get_value( x, i ) ) );
+  end loop;
+-- use a path function to get a JSON-value
+  dbms_output.put_line( as_json.get_string( as_json.path_get( x, 'c.f[1][3][4].x' ) ) );
+-- use a path parameter to get a string/number/boolean value
+  dbms_output.put_line( as_json.get_number( x, 'c.f[3].g.h' ) );
+-- use an embedded cursor inside your refcursor
+  open rc for select r, 'test' || r x, sysdate + r d, cursor( select level lev from dual connect by level <= r ) "embedded cursor" from ( select level r from dual connect by level <= 5 );
+  x := as_json.json_ec( rc );
+-- and show the resulting json string
+  dbms_output.put_line( as_json.stringify( x ) );
+-- free memory after you're done
+  as_json.free;
+end;
+/
+select as_json.qget_string( x, 'a' )
+     , as_json.qget_number( x, 'b' )
+from ( select as_json.qjson(  '{"a": "abc", "b" : 1}' ) x
+       from dual
+     )
+/
+select as_json.qget_number( column_value )
+from table( as_json.qget_array( as_json.qjson( '[1,2,3,4,5,6,7]' ) ) )
+/
+select as_json.qget_number( column_value, 'b' )
+from table( as_json.qget_array( as_json.qjson( '[{"a":"abc", "b":3}
+                                                ,{"a":"def", "b":2}
+                                                ,{"a":"ABC", "b":1}
+                                                ]' ) ) )
+
+/
+select as_json.qget_string( x, 'a' )
+     , as_json.qget_number( x, 'b' )
+     , as_json.qget_number( av.column_value )
+from ( select as_json.qjson(  '{"a": "abc", "b" : 1,"c":[1,2,3,4,5,6,7],"d":{"aa":[11,12,13]}}' ) x
+       from dual
+     )
+   , table( as_json.qget_array( x, 'd.aa' ) ) av
+/
+begin
+  as_json.free; -- also issue a free after use of the q-functions!
+end;
+/
+*/
+--
+  type tp_json_value is record ( json_type varchar2(1)
+                               , idx pls_integer
+                               );
+  type tp_jv_indexes is table of number;
+--
+  function jv
+  return tp_json_value;
+--
+  function jv( p_val varchar2 character set any_cs )
+  return tp_json_value;
+--
+  function jv( p_cval clob character set any_cs )
+  return tp_json_value;
+--
+  function jv( p_val date, p_fmt varchar2 := null )
+  return tp_json_value;
+--
+  function jv( p_val number )
+  return tp_json_value;
+--
+  function jv( p_val boolean )
+  return tp_json_value;
+--
+  function jv( p_val varchar2, p_true varchar2 )
+  return tp_json_value;
+--
+  function jv
+    ( p_val blob
+    , p_how pls_integer := 2 -- 1 => blob as hex-string
+                             -- 2 => blob as base64 encoded string
+                             -- 3 => blob as array of base64 encoded strings
+    )
+  return tp_json_value;
+--
+  function add_member
+    ( p_json  tp_json_value
+    , p_name  tp_json_value
+    , p_value tp_json_value
+    )
+  return tp_json_value;
+--
+  procedure add_member
+    ( p_json  in out tp_json_value
+    , p_name  tp_json_value
+    , p_value tp_json_value
+    );
+--
+  procedure add_member
+    ( p_json  in out tp_json_value
+    , p_name  varchar2
+    , p_value tp_json_value
+    );
+--
+  procedure add_member
+    ( p_json  in out tp_json_value
+    , p_name  varchar2
+    , p_value varchar2 character set any_cs
+    );
+--
+  procedure add_member
+    ( p_json  in out tp_json_value
+    , p_name  varchar2
+    , p_value number
+    );
+--
+  procedure add_member
+    ( p_json  in out tp_json_value
+    , p_name  varchar2
+    , p_value date
+    , p_fmt varchar2 := null
+    );
+--
+  function add_item
+    ( p_json tp_json_value
+    , p_value tp_json_value
+    )
+  return tp_json_value;
+--
+  procedure add_item
+    ( p_json in out tp_json_value
+    , p_value tp_json_value
+    );
+--
+  procedure add_item
+    ( p_json in out tp_json_value
+    , p_value varchar2 character set any_cs
+    );
+--
+  procedure add_item
+    ( p_json in out tp_json_value
+    , p_value number
+    );
+--
+  procedure add_item
+    ( p_json in out tp_json_value
+    , p_value date
+    , p_fmt varchar2 := null
+    );
+--
+  function json -- create an object
+    ( n1 varchar2      , v1 tp_json_value
+    , n2 varchar2 := '', v2 tp_json_value := null
+    , n3 varchar2 := '', v3 tp_json_value := null
+    , n4 varchar2 := '', v4 tp_json_value := null
+    , n5 varchar2 := '', v5 tp_json_value := null
+    , n6 varchar2 := '', v6 tp_json_value := null
+    , n7 varchar2 := '', v7 tp_json_value := null
+    , n8 varchar2 := '', v8 tp_json_value := null
+    )
+  return tp_json_value;
+--
+  function json -- create an array
+    ( v1 tp_json_value
+    , v2 tp_json_value := null
+    , v3 tp_json_value := null
+    , v4 tp_json_value := null
+    , v5 tp_json_value := null
+    , v6 tp_json_value := null
+    , v7 tp_json_value := null
+    , v8 tp_json_value := null
+    )
+  return tp_json_value;
+--
+  function json -- create an array
+    ( p_rc sys_refcursor
+    , p_date_fmt varchar2 := null
+    , p_raw pls_integer := 2 -- 1 => include raws as hex-string
+                             -- 2 => include raws as base64 encoded string
+                             -- 3 => include raws as array of base64 encoded strings
+    , p_blob pls_integer := 0 -- 1 => include blobs as hex-string
+                              -- 2 => include blobs as base64 encoded string
+                              -- 3 => include blobs as array of base64 encoded strings
+    , p_check_boolean_strings boolean := false
+    )
+  return tp_json_value;
+--
+  function json( p_json clob character set any_cs ) -- parses a JSON-string
+  return tp_json_value;
+--
+  function json( p_xml xmltype
+               , p_incl_root boolean := false
+               , p_compact_object boolean := true
+               , p_compact_array boolean := true
+               )
+  return tp_json_value;
+--
+  function json
+    ( p_ad anydata
+    , p_date_fmt varchar2 := null
+    , p_raw pls_integer := 2 -- 1 => include raws as hex-string
+                             -- 2 => include raws as base64 encoded string
+                             -- 3 => include raws as array of base64 encoded strings
+    , p_blob pls_integer := 0 -- 1 => include blobs as hex-string
+                              -- 2 => include blobs as base64 encoded string
+                              -- 3 => include blobs as array of base64 encoded strings
+    )
+  return tp_json_value;
+--
+/* json_ec returns by default a JSON-array
+** In case you want to return the first entry of that array as a JSON-object use p_return_object = 'Y'
+** In case you want to return a nested cursor to return a JSON-object, give the cursor column a alias starting with p_return_object_pre
+** For example
+**   select cursor( select * from dual ) ROIOA_dual from dual
+*/
+function json_ec -- create an array
+    ( p_rc in out sys_refcursor
+    , p_date_fmt varchar2 := null
+    , p_raw pls_integer := 2 -- 1 => include raws as hex-string
+                             -- 2 => include raws as base64 encoded string
+                             -- 3 => include raws as array of base64 encoded strings
+    , p_blob pls_integer := 0 -- 1 => include blobs as hex-string
+                              -- 2 => include blobs as base64 encoded string
+                              -- 3 => include blobs as array of base64 encoded strings
+    , p_check_boolean_strings varchar2 := 'N'
+    , p_return_object varchar2 := 'N'
+    , p_return_object_pre varchar2 := 'ROIOA_'
+    )
+  return tp_json_value;
+--
+  function get_json_type( p_val tp_json_value )
+  return varchar2;
+--
+  function get_string
+    ( p_val tp_json_value
+    , p_path varchar2 character set any_cs := null
+    , p_charset varchar2 character set any_cs := null  -- set charset of result
+    )
+  return varchar2 character set p_charset%charset;
+--
+  function get_string_clob
+    ( p_val tp_json_value
+    , p_path varchar2 character set any_cs := null
+    , p_charset varchar2 character set any_cs := null  -- set charset of result
+    )
+  return clob character set p_charset%charset;
+--
+  function get_number
+    ( p_val tp_json_value
+    , p_path varchar2 character set any_cs := null
+    )
+  return number;
+--
+  function get_boolean
+    ( p_val tp_json_value
+    , p_path varchar2 character set any_cs := null
+    )
+  return boolean;
+--
+  function get_date
+    ( p_val tp_json_value
+    , p_path varchar2 character set any_cs := null
+    , p_fmt varchar2 := null
+    )
+  return date;
+--
+  function get_count( p_val tp_json_value )
+  return pls_integer;
+--
+  function get_name( p_val tp_json_value, p_idx pls_integer )
+  return varchar2;
+--
+  function get_value( p_val tp_json_value, p_idx pls_integer )
+  return tp_json_value;
+--
+  function path_get
+    ( p_val tp_json_value
+    , p_path varchar2 character set any_cs
+    )
+  return tp_json_value;
+--
+  procedure free;
+--
+  procedure free( p_val tp_json_value );
+--
+  function stringify( p_val tp_json_value
+                    , p_inc pls_integer := null -- pretty print increment
+                    , p_xxx pls_integer := null -- # spaces after colon
+                    , p_ind pls_integer := null -- do not use, for internal usage only
+                    )
+  return clob;
+--
+  function stringify
+    ( p_rc sys_refcursor
+    , p_date_fmt varchar2 := null
+    , p_raw pls_integer := 2 -- 1 => include raws as hex-string
+                             -- 2 => include raws as base64 encoded string
+                             -- 3 => include raws as array of base64 encoded strings
+    , p_blob pls_integer := 0 -- 1 => include blobs as hex-string
+                              -- 2 => include blobs as base64 encoded string
+                              -- 3 => include blobs as array of base64 encoded strings
+    , p_check_boolean_strings varchar2 := 'N'
+    )
+  return clob;
+--
+  function stringify_ec
+    ( p_rc sys_refcursor
+    , p_date_fmt varchar2 := null
+    , p_raw pls_integer := 2 -- 1 => include raws as hex-string
+                             -- 2 => include raws as base64 encoded string
+                             -- 3 => include raws as array of base64 encoded strings
+    , p_blob pls_integer := 0 -- 1 => include blobs as hex-string
+                              -- 2 => include blobs as base64 encoded string
+                              -- 3 => include blobs as array of base64 encoded strings
+    , p_check_boolean_strings varchar2 := 'N'
+    , p_return_object varchar2 := 'N'
+    , p_return_object_pre varchar2 := 'ROIOA_'
+    )
+  return clob;
+--
+  procedure htp( p_val tp_json_value
+               , p_add_json_header boolean := true
+               , p_jsonp varchar2 := null
+               , p_free boolean := true
+               );
+--
+  function to_xmltype
+    ( p_val tp_json_value
+    , p_root varchar2 := null
+    , p_array_item varchar2 := null
+    , p_free varchar2 := 'Y'
+    )
+  return xmltype;
+--
+  function to_xmltype
+    ( p_json clob character set any_cs
+    , p_root varchar2 := null
+    , p_array_item varchar2 := null
+    , p_free varchar2 := 'Y'
+    )
+  return xmltype;
+--
+  procedure set_default_date_fmt( p_fmt varchar2 );
+--
+  function qjson( p_json clob character set any_cs ) -- parses a JSON-string
+  return number;
+--
+  function qget_string
+    ( p_val number
+    , p_path varchar2 character set any_cs := null
+    , p_charset varchar2 character set any_cs := null  -- set charset of result
+    )
+  return varchar2 character set p_charset%charset;
+--
+  function qget_string_clob
+    ( p_val number
+    , p_path varchar2 character set any_cs := null
+    , p_charset varchar2 character set any_cs := null  -- set charset of result
+    )
+  return clob character set p_charset%charset;
+--
+  function qget_number
+    ( p_val number
+    , p_path varchar2 character set any_cs := null
+    )
+  return number;
+--
+  function qget_boolean
+    ( p_val number
+    , p_path varchar2 character set any_cs
+    , p_true varchar2 := 'TRUE'
+    , p_false varchar2 := 'FALSE'
+    )
+  return varchar2;
+--
+  function qget_date
+    ( p_val number
+    , p_path varchar2 character set any_cs := null
+    , p_fmt varchar2 := null
+    )
+  return date;
+--
+  function qpath_get
+    ( p_val number
+    , p_path varchar2 character set any_cs
+    )
+  return number;
+--
+  function qget_array
+    ( p_val number
+    , p_path varchar2 character set any_cs := null
+    )
+  return tp_jv_indexes pipelined;
+end;
+/
